@@ -22,12 +22,12 @@ def get_app() -> FastAPI:
 
 app = get_app()
 
-if __name__ == "__main__":
-    run(
-        "vkr_itmo.__main__:app",
-        host=config.APP_HOST,
-        port=config.APP_PORT,
-        reload=True,
-        reload_dirs=["vkr_itmo"],
-        log_level="debug",
-    )
+# if __name__ == "__main__":
+#     run(
+#         "vkr_itmo.__main__:app",
+#         host=config.APP_HOST,
+#         port=config.APP_PORT,
+#         reload=True,
+#         reload_dirs=["vkr_itmo"],
+#         log_level="debug",
+#     )
