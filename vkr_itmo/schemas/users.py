@@ -11,6 +11,12 @@ class UserRole(str, Enum):
     STUDENT = "STUDENT"
 
 
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    role: UserRole = UserRole.STUDENT
+
 
 class UserResponse(BaseModel):
     id: UUID
