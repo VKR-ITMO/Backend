@@ -119,6 +119,7 @@ class Course(DeclarativeBase):
     code = Column(String, unique=True, nullable=False)
     description = Column(String, nullable=True)
     semester = Column(String, nullable=False)
+    image_url = Column(String, nullable=True)
     status = Column(Enum(CourseStatus), nullable=False, default=CourseStatus.ACTIVE)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

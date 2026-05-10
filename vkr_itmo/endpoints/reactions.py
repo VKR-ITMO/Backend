@@ -137,4 +137,3 @@ async def get_reaction_stats(
     stats.total = total
 
     return stats
-    return stats

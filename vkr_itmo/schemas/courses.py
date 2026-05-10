@@ -15,6 +15,7 @@ class CourseBase(BaseModel):
     code: str
     description: Optional[str] = None
     semester: str
+    image_url: Optional[str] = None
 
 
 class CourseCreate(CourseBase):
@@ -26,6 +27,7 @@ class CourseUpdate(BaseModel):
     code: Optional[str] = None
     description: Optional[str] = None
     semester: Optional[str] = None
+    image_url: Optional[str] = None
     status: Optional[CourseStatus] = None
 
 
