@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from vkr_itmo.db.session import get_session
@@ -209,7 +209,7 @@ async def launch_quiz_in_session(
     session_quiz = SessionQuiz(
         session_id=session_id,
         quiz_id=launch_data.quiz_id,
-        launched_at=datetime.utcnow()
+        launched_at=datetime.now(timezone.utc)
     )
     db_session.add(session_quiz)
 
@@ -248,7 +248,7 @@ async def end_session_quiz(
     if session_obj.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    session_quiz.ended_at = datetime.utcnow()
+    session_quiz.ended_at = datetime.now(timezone.utc)
     await db_session.commit()
 
     # Считаем статистику
@@ -317,7 +317,7 @@ async def submit_answers(
         student_id=current_user.id,
         answers=submission_data.answers,
         score=total_score,
-        submitted_at=datetime.utcnow()
+        submitted_at=datetime.now(timezone.utc)
     )
     db_session.add(submission)
     await db_session.commit()

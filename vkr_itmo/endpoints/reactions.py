@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import Reaction, Session, User, UserRole
@@ -48,7 +48,7 @@ async def send_reaction(
         .where(Reaction.student_id == current_user.id)
         .where(Reaction.type == reaction_data.type)
         .where(
-            Reaction.created_at >= datetime.utcnow() - timedelta(seconds=5)
+            Reaction.created_at >= datetime.now(timezone.utc) - timedelta(seconds=5)
         )
     )
 
@@ -63,7 +63,7 @@ async def send_reaction(
         session_id=session_id,
         student_id=current_user.id,
         type=reaction_data.type,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
 
     db_session.add(reaction)

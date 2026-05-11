@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 import secrets
 
@@ -75,7 +75,7 @@ async def start_session(
         lecture_id=lecture.id,
         teacher_id=current_user.id,
         access_code=access_code,
-        started_at=datetime.utcnow(),
+        started_at=datetime.now(timezone.utc),
         total_participants=0,
         total_reactions=0,
         total_quizzes=0
@@ -133,7 +133,7 @@ async def join_session(
     participant = SessionParticipant(
         session_id=session.id,
         student_id=current_user.id,
-        joined_at=datetime.utcnow()
+        joined_at=datetime.now(timezone.utc)
     )
     db_session.add(participant)
 
@@ -198,11 +198,14 @@ async def end_session(
             detail="Session already ended"
         )
 
-    ended_at = datetime.utcnow()
+    ended_at = datetime.now(timezone.utc)
     session.ended_at = ended_at
 
-    # Считаем длительность
-    duration = int((ended_at - session.started_at).total_seconds())
+    # Считаем длительность (handle both aware and naive started_at)
+    started_at = session.started_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    duration = int((ended_at - started_at).total_seconds())
 
     await db_session.commit()
     await db_session.refresh(session)
@@ -241,7 +244,9 @@ async def get_session_history(
 
     completed = []
     for s in sessions:
-        duration = int((s.ended_at - s.started_at).total_seconds())
+        s_ended = s.ended_at if s.ended_at.tzinfo else s.ended_at.replace(tzinfo=timezone.utc)
+        s_started = s.started_at if s.started_at.tzinfo else s.started_at.replace(tzinfo=timezone.utc)
+        duration = int((s_ended - s_started).total_seconds())
         completed.append(CompletedSession(
             id=s.id,
             lecture_id=s.lecture_id,
