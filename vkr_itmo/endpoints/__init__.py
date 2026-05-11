@@ -9,6 +9,7 @@ from .quizzes import api_router as quizzes_router
 from .quizzes import runtime_router
 from .quizzes import submissions_router
 from .reactions import api_router as reactions_router
+from .materials import api_router as materials_router
 routes = [
     auth_router,
     students_router,
@@ -21,6 +22,7 @@ routes = [
     runtime_router,
     submissions_router,
     reactions_router,
+    materials_router,
 ]
 
 

@@ -221,6 +221,74 @@ async def launch_quiz_in_session(
     return session_quiz
 
 
+@runtime_router.get("/active")
+async def get_active_quiz_in_session(
+    session_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Получить активный квиз в сессии (для студентов и учителей)"""
+    result = await db_session.execute(
+        select(SessionQuiz)
+        .where(SessionQuiz.session_id == session_id)
+        .where(SessionQuiz.ended_at == None)
+        .order_by(SessionQuiz.launched_at.desc())
+    )
+    session_quiz = result.scalar_one_or_none()
+
+    if not session_quiz:
+        return None
+
+    # Загружаем квиз с вопросами
+    quiz_result = await db_session.execute(
+        select(Quiz).where(Quiz.id == session_quiz.quiz_id)
+    )
+    quiz_obj = quiz_result.scalar_one_or_none()
+    if not quiz_obj:
+        return None
+
+    questions_result = await db_session.execute(
+        select(QuizQuestion)
+        .where(QuizQuestion.quiz_id == session_quiz.quiz_id)
+        .order_by(QuizQuestion.order_index)
+    )
+    questions = questions_result.scalars().all()
+
+    questions_data = []
+    for q in questions:
+        answers_result = await db_session.execute(
+            select(QuizAnswer).where(QuizAnswer.question_id == q.id)
+        )
+        answers = answers_result.scalars().all()
+
+        questions_data.append({
+            "id": str(q.id),
+            "text": q.text,
+            "type": q.type.value if hasattr(q.type, 'value') else str(q.type),
+            "points": q.points,
+            "timer": q.timer,
+            "order_index": q.order_index,
+            "extra_data": q.extra_data,
+            "answers": [
+                {
+                    "id": str(a.id),
+                    "text": a.text,
+                    "is_correct": a.is_correct
+                }
+                for a in answers
+            ]
+        })
+
+    return {
+        "session_quiz_id": str(session_quiz.id),
+        "quiz_id": str(session_quiz.quiz_id),
+        "title": quiz_obj.title,
+        "description": quiz_obj.description,
+        "launched_at": session_quiz.launched_at.isoformat(),
+        "questions": questions_data
+    }
+
+
 @runtime_router.post("/end", response_model=SessionQuizWithStats)
 async def end_session_quiz(
     session_id: UUID,

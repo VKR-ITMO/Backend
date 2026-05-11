@@ -116,29 +116,43 @@ async def join_session(
             detail="Session has ended"
         )
 
-    # Проверяем, не присоединён ли уже
-    existing = await db_session.execute(
+    # Проверяем, не присоединён ли уже (активный участник)
+    existing_active = await db_session.execute(
         select(SessionParticipant)
         .where(SessionParticipant.session_id == session.id)
         .where(SessionParticipant.student_id == current_user.id)
         .where(SessionParticipant.left_at == None)
     )
-    if existing.scalar_one_or_none():
+    if existing_active.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Already joined this session"
         )
 
-    # Создаём участника
-    participant = SessionParticipant(
-        session_id=session.id,
-        student_id=current_user.id,
-        joined_at=datetime.now(timezone.utc)
+    # Проверяем, был ли ранее (ушёл) — разрешаем повторный вход
+    existing_left = await db_session.execute(
+        select(SessionParticipant)
+        .where(SessionParticipant.session_id == session.id)
+        .where(SessionParticipant.student_id == current_user.id)
+        .where(SessionParticipant.left_at != None)
     )
-    db_session.add(participant)
+    prev_participant = existing_left.scalar_one_or_none()
 
-    # Увеличиваем счётчик
-    session.total_participants += 1
+    if prev_participant:
+        # Rejoin: clear left_at
+        prev_participant.left_at = None
+        prev_participant.joined_at = datetime.now(timezone.utc)
+    else:
+        # Создаём участника
+        participant = SessionParticipant(
+            session_id=session.id,
+            student_id=current_user.id,
+            joined_at=datetime.now(timezone.utc)
+        )
+        db_session.add(participant)
+
+        # Увеличиваем счётчик
+        session.total_participants += 1
 
     await db_session.commit()
     await db_session.refresh(session)
@@ -259,6 +273,36 @@ async def get_session_history(
         ))
 
     return completed
+
+
+@api_router.post("/{session_id}/leave", response_model=dict)
+async def leave_session(
+        session_id: UUID,
+        db_session: AsyncSession = Depends(get_session),
+        current_user: User = Depends(get_current_user)
+):
+    """Покинуть сессию (только student)"""
+    if current_user.role != UserRole.STUDENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only students can leave sessions"
+        )
+
+    result = await db_session.execute(
+        select(SessionParticipant)
+        .where(SessionParticipant.session_id == session_id)
+        .where(SessionParticipant.student_id == current_user.id)
+        .where(SessionParticipant.left_at == None)
+    )
+    participant = result.scalar_one_or_none()
+
+    if not participant:
+        raise HTTPException(status_code=404, detail="Not in this session")
+
+    participant.left_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    return {"message": "Left session successfully"}
 
 
 @api_router.get("/{session_id}", response_model=SessionResponse)

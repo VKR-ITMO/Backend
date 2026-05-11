@@ -139,6 +139,9 @@ class Course(DeclarativeBase):
     announcements = relationship(
         "Announcement", back_populates="course", cascade="all, delete-orphan"
     )
+    materials = relationship(
+        "CourseMaterial", back_populates="course", cascade="all, delete-orphan"
+    )
 
 
 class CourseEnrollment(DeclarativeBase):
@@ -365,3 +368,18 @@ class Achievement(DeclarativeBase):
 
     # Relationships
     student = relationship("User", back_populates="achievements")
+
+
+class CourseMaterial(DeclarativeBase):
+    __tablename__ = "course_materials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    url = Column(String, nullable=True)
+    file_size = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    course = relationship("Course", back_populates="materials")
