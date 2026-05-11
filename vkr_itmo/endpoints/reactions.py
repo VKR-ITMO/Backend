@@ -106,7 +106,7 @@ async def get_reaction_stats(
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if current_user.role not in ["TEACHER", "ADMIN"]:
+    if current_user.role not in [UserRole.TEACHER, UserRole.ADMIN]:
         if session_obj.teacher_id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

@@ -30,7 +30,7 @@ async def get_courses(
     # Если указан фильтр по роли (например, только свои курсы для teacher)
     if role == "my" and current_user.role == UserRole.TEACHER:
         query = query.where(Course.teacher_id == current_user.id)
-    elif role == UserRole.STUDENT and current_user.role == UserRole.STUDENT:
+    elif current_user.role == UserRole.STUDENT:
         # Для студента - только курсы, на которые он записан
         query = (
             query
@@ -105,10 +105,21 @@ async def get_course(
         select(func.count()).where(Lecture.course_id == course_id)
     )
 
+    total_students = students_count.scalar() or 0
+    total_lectures = lectures_count.scalar() or 0
+
     return CourseWithStats(
-        **course.__dict__,
-        total_students=students_count.scalar(),
-        total_lectures=lectures_count.scalar()
+        id=course.id,
+        teacher_id=course.teacher_id,
+        name=course.name,
+        code=course.code,
+        description=course.description,
+        semester=course.semester,
+        image_url=course.image_url,
+        status=course.status,
+        created_at=course.created_at,
+        total_students=total_students,
+        total_lectures=total_lectures
     )
 
 
@@ -197,7 +208,7 @@ async def enroll_to_course(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    if course.status != "active":
+    if course.status != CourseStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot enroll to archived course"

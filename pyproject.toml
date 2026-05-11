@@ -19,6 +19,7 @@ passlib = {version = ">=1.7.4,<2.0.0", extras = ["bcrypt"]}
 bcrypt = ">=5.0.0,<6.0.0"
 qrcode = {version = ">=8.2,<9.0", extras = ["pil"]}
 psycopg2-binary = "^2.9.12"
+python-dotenv = ">=1.0.0,<2.0.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = ">=1.19.1,<2.0.0"

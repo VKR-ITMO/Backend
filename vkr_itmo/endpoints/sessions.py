@@ -7,7 +7,7 @@ from typing import Optional, List
 import secrets
 
 from vkr_itmo.db.session import get_session
-from vkr_itmo.db.models import Session, Lecture, User, SessionParticipant, Course
+from vkr_itmo.db.models import Session, Lecture, User, SessionParticipant, Course, UserRole
 from vkr_itmo.auth import get_current_user
 from vkr_itmo.auth import get_session_owner, get_active_teacher_session
 from vkr_itmo.schemas.sessions import (
@@ -29,7 +29,7 @@ async def start_session(
         current_user: User = Depends(get_current_user)
 ):
     """Начать live-сессию по лекции (только teacher)"""
-    if current_user.role != "TEACHER":
+    if current_user.role != UserRole.TEACHER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only teachers can start sessions"
@@ -95,7 +95,7 @@ async def join_session(
         current_user: User = Depends(get_current_user)
 ):
     """Подключиться к сессии по коду (только student)"""
-    if current_user.role != "STUDENT":
+    if current_user.role != UserRole.STUDENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only students can join sessions"
@@ -156,12 +156,20 @@ async def join_session(
     teacher = teacher_result.scalar_one_or_none()
 
     return SessionWithLecture(
-        **session.__dict__,
+        id=session.id,
+        lecture_id=session.lecture_id,
+        teacher_id=session.teacher_id,
+        access_code=session.access_code,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        total_participants=session.total_participants,
+        total_reactions=session.total_reactions,
+        total_quizzes=session.total_quizzes,
         lecture={
-            "id": lecture.id,
+            "id": str(lecture.id),
             "name": lecture.name,
             "topic": lecture.topic
-        } if lecture else None
+        } if lecture else {}
     )
 
 
@@ -200,13 +208,56 @@ async def end_session(
     await db_session.refresh(session)
 
     return CompletedSession(
-        **session.__dict__,
+        id=session.id,
+        lecture_id=session.lecture_id,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        total_participants=session.total_participants,
+        total_reactions=session.total_reactions,
+        total_quizzes=session.total_quizzes,
         duration_seconds=duration
     )
 
 
+@api_router.get("/history", response_model=List[CompletedSession])
+async def get_session_history(
+        db_session: AsyncSession = Depends(get_session),
+        current_user: User = Depends(get_current_user)
+):
+    """История завершённых сессий (только teacher)"""
+    if current_user.role not in [UserRole.TEACHER, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can view session history"
+        )
+
+    query = select(Session).where(Session.ended_at != None)
+
+    if current_user.role == UserRole.TEACHER:
+        query = query.where(Session.teacher_id == current_user.id)
+
+    result = await db_session.execute(query.order_by(Session.ended_at.desc()))
+    sessions = result.scalars().all()
+
+    completed = []
+    for s in sessions:
+        duration = int((s.ended_at - s.started_at).total_seconds())
+        completed.append(CompletedSession(
+            id=s.id,
+            lecture_id=s.lecture_id,
+            started_at=s.started_at,
+            ended_at=s.ended_at,
+            total_participants=s.total_participants,
+            total_reactions=s.total_reactions,
+            total_quizzes=s.total_quizzes,
+            duration_seconds=duration
+        ))
+
+    return completed
+
+
 @api_router.get("/{session_id}", response_model=SessionResponse)
-async def get_session(
+async def get_session_by_id(
         session_id: UUID,
         db_session: AsyncSession = Depends(get_session),
         current_user: User = Depends(get_current_user)
@@ -252,34 +303,3 @@ async def get_session_participants(
         ))
 
     return participants
-
-
-@api_router.get("/history", response_model=List[CompletedSession])
-async def get_session_history(
-        db_session: AsyncSession = Depends(get_session),
-        current_user: User = Depends(get_current_user)
-):
-    """История завершённых сессий (только teacher)"""
-    if current_user.role not in ["TEACHER", "ADMIN"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can view session history"
-        )
-
-    query = select(Session).where(Session.ended_at != None)
-
-    if current_user.role == "TEACHER":
-        query = query.where(Session.teacher_id == current_user.id)
-
-    result = await db_session.execute(query.order_by(Session.ended_at.desc()))
-    sessions = result.scalars().all()
-
-    completed = []
-    for session in sessions:
-        duration = int((session.ended_at - session.started_at).total_seconds())
-        completed.append(CompletedSession(
-            **session.__dict__,
-            duration_seconds=duration
-        ))
-
-    return completed

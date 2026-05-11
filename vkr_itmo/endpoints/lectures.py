@@ -8,7 +8,7 @@ from io import BytesIO
 import base64
 
 from vkr_itmo.db.session import get_session
-from vkr_itmo.db.models import Lecture, Course, User
+from vkr_itmo.db.models import Lecture, Course, User, UserRole
 from vkr_itmo.auth import get_current_user
 from vkr_itmo.auth import get_lecture_owner, get_course_for_lecture
 from vkr_itmo.schemas.lectures import (
@@ -120,7 +120,7 @@ async def create_free_lecture(
     """
     Создать свободную лекцию без курса (только для teachers)
     """
-    if current_user.role != "TEACHER":
+    if current_user.role != UserRole.TEACHER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only teachers can create lectures"

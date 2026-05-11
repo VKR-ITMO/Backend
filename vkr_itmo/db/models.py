@@ -20,25 +20,25 @@ DeclarativeBase = declarative_base()
 
 
 # Enums
-class UserRole(enum.Enum):
+class UserRole(str, enum.Enum):
     TEACHER = "TEACHER"
     STUDENT = "STUDENT"
     ADMIN = "ADMIN"
 
 
 
-class CourseStatus(enum.Enum):
+class CourseStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     ARCHIVED = "ARCHIVED"
 
 
-class LectureStatus(enum.Enum):
+class LectureStatus(str, enum.Enum):
     DRAFT = "DRAFT"
     PUBLISHED = "PUBLISHED"
     CANCELLED = "CANCELLED"
 
 
-class QuizQuestionType(enum.Enum):
+class QuizQuestionType(str, enum.Enum):
     SINGLE = "SINGLE"
     MULTIPLE = "MULTIPLE"
     BOOLEAN = "BOOLEAN"
@@ -48,13 +48,13 @@ class QuizQuestionType(enum.Enum):
     MATCHING = "MATCHING"
 
 
-class AnnouncementType(enum.Enum):
+class AnnouncementType(str, enum.Enum):
     INFO = "INFO"
     WARNING = "WARNING"
     SUCCESS = "SUCCESS"
 
 
-class ReactionType(enum.Enum):
+class ReactionType(str, enum.Enum):
     THUMBS_UP = "THUMBS_UP"
     HEART = "HEART"
     CLAP = "CLAP"
