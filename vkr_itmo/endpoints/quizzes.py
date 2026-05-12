@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
-from datetime import datetime, timezone
-from typing import List
+from datetime import datetime, timedelta, timezone
+import os
+import uuid as uuid_lib
 
 from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import (
@@ -170,6 +171,50 @@ async def delete_quiz(
 ):
     await db_session.delete(quiz)
     await db_session.commit()
+
+
+# ==========================================
+# ЗАГРУЗКА ФАЙЛОВ
+# ==========================================
+
+@api_router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Загрузка файла для ответов на вопросы типа FILE"""
+    # Проверяем размер файла (макс 10 МБ)
+    MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    
+    # Проверяем тип файла
+    ALLOWED_TYPES = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png']
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail=f"File type {file.content_type} not allowed")
+    
+    # Генерируем уникальный ID для файла
+    file_id = str(uuid_lib.uuid4())
+    
+    # Создаем директорию для файлов если её нет
+    upload_dir = "uploads/quiz_files"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Сохраняем файл
+    file_extension = file.filename.split('.')[-1] if file.filename else 'bin'
+    file_path = f"{upload_dir}/{file_id}.{file_extension}"
+    
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    return {
+        "file_id": file_id,
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "size": len(content)
+    }
 
 
 # ==========================================
@@ -359,26 +404,76 @@ async def submit_answers(
     # Считаем баллы
     total_score = 0
 
-    # submission_data.answers = { question_id: [answer_ids] }
-    for q_id, a_ids in submission_data.answers.items():
-        # Получаем правильные ответы для этого вопроса
-        correct_answers = await db_session.execute(
-            select(QuizAnswer).where(
-                QuizAnswer.question_id == q_id,
-                QuizAnswer.is_correct == True
-            )
+    # submission_data.answers = { question_id: [answer_ids or text or file_id] }
+    for q_id, a_values in submission_data.answers.items():
+        # Получаем вопрос
+        q_result = await db_session.execute(
+            select(QuizQuestion).where(QuizQuestion.id == q_id)
         )
-        correct_ids = {str(a.id) for a in correct_answers.scalars().all()}
-        submitted_ids = set(a_ids)
+        question = q_result.scalar_one_or_none()
+        if not question:
+            continue
 
-        # Логика: если наборы совпадают - балл засчитан
-        if correct_ids == submitted_ids and len(correct_ids) > 0:
-            # Получаем points вопроса
-            q_res = await db_session.execute(
-                select(QuizQuestion.points).where(QuizQuestion.id == q_id)
+        q_type = question.type.value if hasattr(question.type, 'value') else str(question.type)
+        pts = question.points
+
+        # TEXT и FILE - ручная проверка (0 баллов)
+        if q_type in ['TEXT', 'FILE']:
+            continue
+
+        # BOOLEAN - проверка правильного ответа
+        if q_type == 'BOOLEAN':
+            correct_answers = await db_session.execute(
+                select(QuizAnswer).where(
+                    QuizAnswer.question_id == q_id,
+                    QuizAnswer.is_correct == True
+                )
             )
-            pts = q_res.scalar()
-            total_score += pts
+            correct_ids = {str(a.id) for a in correct_answers.scalars().all()}
+            submitted_ids = set(a_values)
+            if correct_ids == submitted_ids and len(correct_ids) > 0:
+                total_score += pts
+
+        # SINGLE и MULTIPLE - проверка наборов
+        elif q_type in ['SINGLE', 'MULTIPLE']:
+            correct_answers = await db_session.execute(
+                select(QuizAnswer).where(
+                    QuizAnswer.question_id == q_id,
+                    QuizAnswer.is_correct == True
+                )
+            )
+            correct_ids = {str(a.id) for a in correct_answers.scalars().all()}
+            submitted_ids = set(a_values)
+            if correct_ids == submitted_ids and len(correct_ids) > 0:
+                total_score += pts
+
+        # ORDERING - проверка последовательности
+        elif q_type == 'ORDERING':
+            extra_data = question.extra_data or {}
+            correct_order = extra_data.get('correct_order', [])
+            if correct_order and a_values:
+                # Подсчитываем сколько элементов на правильных позициях
+                correct_positions = sum(1 for i, item in enumerate(a_values) if i < len(correct_order) and item == correct_order[i])
+                # Частичный балл: (правильные позиции / общее количество) * баллы
+                if len(correct_order) > 0:
+                    total_score += int((correct_positions / len(correct_order)) * pts)
+
+        # MATCHING - проверка пар
+        elif q_type == 'MATCHING':
+            extra_data = question.extra_data or {}
+            correct_pairs = extra_data.get('correct_pairs', {})
+            if correct_pairs and a_values:
+                try:
+                    # a_values - это JSON строка с парами
+                    import json
+                    submitted_pairs = json.loads(a_values[0]) if a_values else {}
+                    # Подсчитываем сколько правильных пар
+                    correct_count = sum(1 for k, v in submitted_pairs.items() if correct_pairs.get(k) == v)
+                    # Частичный балл: (правильные пары / общее количество) * баллы
+                    if len(correct_pairs) > 0:
+                        total_score += int((correct_count / len(correct_pairs)) * pts)
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
     submission = QuizSubmission(
         session_quiz_id=submission_id,
