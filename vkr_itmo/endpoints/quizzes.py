@@ -389,6 +389,75 @@ async def end_session_quiz(
 submissions_router = APIRouter(prefix="/session-quizzes", tags=["Submissions"])
 
 
+@submissions_router.get("/{session_quiz_id}", response_model=SessionQuizWithStats)
+async def get_session_quiz(
+    session_quiz_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Получить SessionQuiz по ID с статистикой"""
+    result = await db_session.execute(
+        select(SessionQuiz).where(SessionQuiz.id == session_quiz_id)
+    )
+    session_quiz = result.scalar_one_or_none()
+    if not session_quiz:
+        raise HTTPException(status_code=404, detail="Session quiz not found")
+
+    # Получаем название квиза
+    quiz_result = await db_session.execute(
+        select(Quiz).where(Quiz.id == session_quiz.quiz_id)
+    )
+    quiz_obj = quiz_result.scalar_one_or_none()
+
+    # Считаем статистику
+    subs = await db_session.execute(
+        select(func.count(), func.avg(QuizSubmission.score))
+        .where(QuizSubmission.session_quiz_id == session_quiz.id)
+    )
+    count, avg = subs.first()
+
+    return {
+        **{c.name: getattr(session_quiz, c.name) for c in session_quiz.__table__.columns},
+        "title": quiz_obj.title if quiz_obj else "Квиз",
+        "total_submissions": count or 0,
+        "average_score": float(avg) if avg else 0.0
+    }
+
+
+@api_router.get("/{quiz_id}/session-quizzes")
+async def get_quiz_session_quizzes(
+    quiz_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Получить все запуски (session_quizzes) для квиза-шаблона"""
+    result = await db_session.execute(
+        select(SessionQuiz)
+        .where(SessionQuiz.quiz_id == quiz_id)
+        .order_by(SessionQuiz.launched_at.desc())
+    )
+    session_quizzes = result.scalars().all()
+
+    items = []
+    for sq in session_quizzes:
+        subs = await db_session.execute(
+            select(func.count(), func.avg(QuizSubmission.score))
+            .where(QuizSubmission.session_quiz_id == sq.id)
+        )
+        count, avg = subs.first()
+        items.append({
+            "id": sq.id,
+            "session_id": sq.session_id,
+            "quiz_id": sq.quiz_id,
+            "launched_at": sq.launched_at,
+            "ended_at": sq.ended_at,
+            "total_submissions": count or 0,
+            "average_score": float(avg) if avg else 0.0
+        })
+
+    return items
+
+
 @submissions_router.post("/{submission_id}/submit", response_model=QuizSubmissionResponse)
 async def submit_answers(
     submission_id: UUID,

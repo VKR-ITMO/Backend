@@ -90,6 +90,7 @@ class SessionQuizResponse(BaseModel):
 
 
 class SessionQuizWithStats(SessionQuizResponse):
+    title: str = ""
     total_submissions: int = 0
     average_score: float = 0.0
 
