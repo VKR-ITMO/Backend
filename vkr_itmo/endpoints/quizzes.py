@@ -561,6 +561,164 @@ async def submit_answers(
     return submission
 
 
+@submissions_router.get("/{session_quiz_id}/submissions")
+async def get_submissions_with_details(
+    session_quiz_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Получить все ответы студентов с расшифровкой по вопросам (только teacher)"""
+    # Проверяем, что это SessionQuiz и учитель имеет доступ к сессии
+    sq_result = await db_session.execute(
+        select(SessionQuiz).where(SessionQuiz.id == session_quiz_id)
+    )
+    session_quiz = sq_result.scalar_one_or_none()
+    if not session_quiz:
+        raise HTTPException(status_code=404, detail="Session quiz not found")
+
+    session_result = await db_session.execute(
+        select(Session).where(Session.id == session_quiz.session_id)
+    )
+    session_obj = session_result.scalar_one_or_none()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if current_user.role != UserRole.ADMIN and session_obj.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only teacher of the session can view submissions")
+
+    # Загружаем все вопросы квиза с ответами
+    questions_result = await db_session.execute(
+        select(QuizQuestion)
+        .where(QuizQuestion.quiz_id == session_quiz.quiz_id)
+        .order_by(QuizQuestion.order_index)
+    )
+    questions = questions_result.scalars().all()
+
+    questions_data = []
+    answer_text_map = {}  # {answer_id: text}
+    correct_answer_ids_map = {}  # {question_id: set of correct answer_ids}
+    for q in questions:
+        answers_result = await db_session.execute(
+            select(QuizAnswer).where(QuizAnswer.question_id == q.id)
+        )
+        answers = answers_result.scalars().all()
+        correct_ids = set()
+        for a in answers:
+            answer_text_map[str(a.id)] = a.text
+            if a.is_correct:
+                correct_ids.add(str(a.id))
+        correct_answer_ids_map[str(q.id)] = correct_ids
+
+        q_type = q.type.value if hasattr(q.type, 'value') else str(q.type)
+        questions_data.append({
+            "id": str(q.id),
+            "text": q.text,
+            "type": q_type,
+            "points": q.points,
+            "extra_data": q.extra_data,
+            "answers": [
+                {"id": str(a.id), "text": a.text, "is_correct": a.is_correct}
+                for a in answers
+            ]
+        })
+
+    # Загружаем все submissions с именами студентов
+    subs_result = await db_session.execute(
+        select(QuizSubmission, User)
+        .join(User, QuizSubmission.student_id == User.id)
+        .where(QuizSubmission.session_quiz_id == session_quiz_id)
+        .order_by(QuizSubmission.score.desc(), QuizSubmission.submitted_at.asc())
+    )
+
+    submissions = []
+    for sub, user in subs_result.all():
+        # Расшифровываем ответы: превращаем id в text где возможно
+        decoded = []
+        for q in questions_data:
+            q_id = q["id"]
+            q_type = q["type"]
+            raw = sub.answers.get(q_id, []) if sub.answers else []
+            correct_ids = correct_answer_ids_map.get(q_id, set())
+
+            if q_type in ('SINGLE', 'MULTIPLE', 'BOOLEAN'):
+                texts = [answer_text_map.get(aid, aid) for aid in raw]
+                is_correct = set(raw) == correct_ids and len(correct_ids) > 0
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": texts,
+                    "is_correct": is_correct,
+                    "raw": raw,
+                })
+            elif q_type == 'TEXT':
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": [raw[0] if raw else ""],
+                    "is_correct": None,  # manual review
+                    "raw": raw,
+                })
+            elif q_type == 'FILE':
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": [f"Файл: {raw[0]}" if raw else "Не загружен"],
+                    "is_correct": None,
+                    "raw": raw,
+                })
+            elif q_type == 'ORDERING':
+                extra = q.get("extra_data") or {}
+                correct_order = extra.get("correct_order", [])
+                is_correct = list(raw) == list(correct_order) if correct_order else None
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": list(raw),
+                    "correct_order": correct_order,
+                    "is_correct": is_correct,
+                    "raw": raw,
+                })
+            elif q_type == 'MATCHING':
+                extra = q.get("extra_data") or {}
+                correct_pairs = extra.get("correct_pairs", {}) or {}
+                try:
+                    import json as _json
+                    submitted_pairs = _json.loads(raw[0]) if raw else {}
+                except (ValueError, IndexError):
+                    submitted_pairs = {}
+                is_correct = submitted_pairs == correct_pairs if correct_pairs else None
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": [f"{k} → {v}" for k, v in submitted_pairs.items()],
+                    "pairs": submitted_pairs,
+                    "correct_pairs": correct_pairs,
+                    "is_correct": is_correct,
+                    "raw": raw,
+                })
+
+        submissions.append({
+            "id": str(sub.id),
+            "student_id": str(sub.student_id),
+            "student_name": user.full_name,
+            "student_email": user.email,
+            "score": sub.score,
+            "submitted_at": sub.submitted_at.isoformat() if sub.submitted_at else None,
+            "answers": decoded,
+        })
+
+    return {
+        "session_quiz_id": str(session_quiz_id),
+        "questions": questions_data,
+        "submissions": submissions,
+    }
+
+
 @submissions_router.get("/{submission_id}/leaderboard", response_model=List[LeaderboardEntry])
 async def get_leaderboard(
     submission_id: UUID,

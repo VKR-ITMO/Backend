@@ -53,5 +53,6 @@ class SessionParticipantResponse(BaseModel):
     student_email: str
     joined_at: datetime
     left_at: Optional[datetime] = None
+    total_score: int = 0
 
     model_config = {"from_attributes": True}

@@ -7,7 +7,7 @@ from typing import Optional, List
 import secrets
 
 from vkr_itmo.db.session import get_session
-from vkr_itmo.db.models import Session, Lecture, User, SessionParticipant, Course, UserRole
+from vkr_itmo.db.models import Session, Lecture, User, SessionParticipant, Course, UserRole, SessionQuiz, QuizSubmission
 from vkr_itmo.auth import get_current_user
 from vkr_itmo.auth import get_session_owner, get_active_teacher_session
 from vkr_itmo.schemas.sessions import (
@@ -340,6 +340,18 @@ async def get_session_participants(
         .where(SessionParticipant.session_id == session_id)
     )
 
+    # Суммируем баллы по каждому студенту за все квизы этой сессии
+    score_result = await db_session.execute(
+        select(
+            QuizSubmission.student_id,
+            func.sum(QuizSubmission.score).label("total_score")
+        )
+        .join(SessionQuiz, QuizSubmission.session_quiz_id == SessionQuiz.id)
+        .where(SessionQuiz.session_id == session_id)
+        .group_by(QuizSubmission.student_id)
+    )
+    scores_map = {row[0]: int(row[1] or 0) for row in score_result.all()}
+
     participants = []
     for participant, user in result.all():
         participants.append(SessionParticipantResponse(
@@ -349,7 +361,8 @@ async def get_session_participants(
             student_name=user.full_name,
             student_email=user.email,
             joined_at=participant.joined_at,
-            left_at=participant.left_at
+            left_at=participant.left_at,
+            total_score=scores_map.get(participant.student_id, 0)
         ))
 
     return participants
