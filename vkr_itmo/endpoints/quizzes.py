@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
+from typing import List
 import os
 import uuid as uuid_lib
 
