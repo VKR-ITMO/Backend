@@ -3,8 +3,11 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Dict
 import json
+import logging
 
 api_router = APIRouter(tags=["WebSocket"])
+
+logger = logging.getLogger(__name__)
 
 active_connections: Dict[str, Dict[str, WebSocket]] = {}
 
@@ -16,12 +19,12 @@ class ConnectionManager:
             active_connections[access_code] = {}
 
         active_connections[access_code][student_id] = websocket
-        print(f"✅ Client {student_id} connected to session {access_code}")
+        logger.info(f"Client {student_id} connected to session {access_code}")
 
     def disconnect(self, access_code: str, student_id: str):
         if access_code in active_connections:
             active_connections[access_code].pop(student_id, None)
-            print(f"❌ Client {student_id} disconnected from session {access_code}")
+            logger.info(f"Client {student_id} disconnected from session {access_code}")
 
             if not active_connections[access_code]:
                 del active_connections[access_code]
@@ -38,7 +41,7 @@ class ConnectionManager:
             try:
                 await websocket.send_json(message)
             except Exception as e:
-                print(f"Error sending to {student_id}: {e}")
+                logger.error(f"Error sending to {student_id}: {e}")
                 disconnected.append(student_id)
 
         for student_id in disconnected:
@@ -50,7 +53,7 @@ class ConnectionManager:
             try:
                 await active_connections[access_code][student_id].send_json(message)
             except Exception as e:
-                print(f"Error sending personal message: {e}")
+                logger.error(f"Error sending personal message: {e}")
                 self.disconnect(access_code, student_id)
 
 
@@ -63,7 +66,7 @@ async def websocket_endpoint(websocket: WebSocket):
     WebSocket endpoint для live-сессий
     """
     await websocket.accept()  # ✅ ОДИН РАЗ здесь!
-    print("🔌 WebSocket connection accepted")
+    logger.info("WebSocket connection accepted")
 
     try:
         while True:
@@ -73,7 +76,7 @@ async def websocket_endpoint(websocket: WebSocket):
             event = message.get("event")
             payload = message.get("payload", {})
 
-            print(f"📥 Received event: {event}")
+            logger.debug(f"Received event: {event}")
 
             if event == "session:join":
                 access_code = payload.get("access_code")
@@ -123,6 +126,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
 
     except WebSocketDisconnect:
-        print("🔌 WebSocket disconnected")
+        logger.info("WebSocket disconnected")
     except Exception as e:
-        print(f"❌ WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}")
