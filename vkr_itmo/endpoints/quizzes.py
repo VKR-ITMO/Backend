@@ -248,8 +248,11 @@ async def launch_quiz_in_session(
         select(Quiz).where(Quiz.id == launch_data.quiz_id)
     )
     quiz_obj = quiz_result.scalar_one_or_none()
-    if not quiz_obj or quiz_obj.teacher_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Quiz not found or not yours")
+    if not quiz_obj:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    # Remove teacher_id check to allow launching quizzes from templates
+    # if quiz_obj.teacher_id and quiz_obj.teacher_id != current_user.id:
+    #     raise HTTPException(status_code=404, detail="Quiz not found or not yours")
 
     # Создаем запись о запуске
     session_quiz = SessionQuiz(

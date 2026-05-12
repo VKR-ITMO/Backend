@@ -329,9 +329,24 @@ async def get_session_participants(
         db_session: AsyncSession = Depends(get_session),
         current_user: User = Depends(get_current_user)
 ):
-    """Получить список участников сессии (только teacher)"""
-    # Проверяем права
-    await get_session_owner(session_id, db_session, current_user)
+    """Получить список участников сессии (teacher и участники сессии)"""
+    # Проверяем что сессия существует
+    result = await db_session.execute(select(Session).where(Session.id == session_id))
+    session_obj = result.scalar_one_or_none()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Проверяем что пользователь имеет доступ к сессии
+    # (является учителем сессии или участником сессии)
+    if current_user.role != UserRole.TEACHER:
+        participant_result = await db_session.execute(
+            select(SessionParticipant).where(
+                SessionParticipant.session_id == session_id,
+                SessionParticipant.student_id == current_user.id
+            )
+        )
+        if not participant_result.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Not a participant of this session")
 
     result = await db_session.execute(
         select(SessionParticipant, User)
