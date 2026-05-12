@@ -28,8 +28,8 @@ async def get_courses(
     """
     query = select(Course)
 
-    # Если указан фильтр по роли (например, только свои курсы для teacher)
-    if role == "my" and current_user.role == UserRole.TEACHER:
+    # Преподаватель всегда видит только свои курсы
+    if current_user.role == UserRole.TEACHER:
         query = query.where(Course.teacher_id == current_user.id)
     elif current_user.role == UserRole.STUDENT:
         # Для студента - только курсы, на которые он записан

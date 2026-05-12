@@ -130,7 +130,16 @@ async def update_quiz(
 
     # 2. Если переданы вопросы, заменяем их полностью
     if quiz_data.questions is not None:
-        # Удаляем старые вопросы (каскадно удалятся ответы)
+        # Сначала удаляем ответы, т.к. FK на quiz_answers.question_id
+        # не имеет ON DELETE CASCADE на уровне БД.
+        await db_session.execute(
+            QuizAnswer.__table__.delete().where(
+                QuizAnswer.question_id.in_(
+                    select(QuizQuestion.id).where(QuizQuestion.quiz_id == quiz_id)
+                )
+            )
+        )
+        # Затем удаляем сами вопросы
         await db_session.execute(
             QuizQuestion.__table__.delete().where(
                 QuizQuestion.quiz_id == quiz_id
