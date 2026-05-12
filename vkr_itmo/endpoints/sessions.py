@@ -352,3 +352,45 @@ async def get_session_participants(
         ))
 
     return participants
+
+
+@api_router.get("/lecture/{lecture_id}/active", response_model=Optional[SessionWithLecture])
+async def get_active_session_for_lecture(
+        lecture_id: UUID,
+        db_session: AsyncSession = Depends(get_session),
+        current_user: User = Depends(get_current_user)
+):
+    """Получить активную сессию для лекции (любой пользователь)"""
+    # Ищем активную сессию для лекции
+    result = await db_session.execute(
+        select(Session)
+        .where(Session.lecture_id == lecture_id)
+        .where(Session.ended_at == None)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        return None
+
+    # Получаем информацию о лекции
+    lecture_result = await db_session.execute(
+        select(Lecture).where(Lecture.id == session.lecture_id)
+    )
+    lecture = lecture_result.scalar_one_or_none()
+
+    return SessionWithLecture(
+        id=session.id,
+        lecture_id=session.lecture_id,
+        teacher_id=session.teacher_id,
+        access_code=session.access_code,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        total_participants=session.total_participants,
+        total_reactions=session.total_reactions,
+        total_quizzes=session.total_quizzes,
+        lecture={
+            "id": str(lecture.id),
+            "name": lecture.name,
+            "topic": lecture.topic
+        } if lecture else {}
+    )
