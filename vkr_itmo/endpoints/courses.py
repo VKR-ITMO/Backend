@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
 import os
 import uuid as uuid_lib
 import logging
+from typing import Optional
 
 from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import Course, CourseEnrollment, Lecture, Session, User, UserRole, CourseStatus
