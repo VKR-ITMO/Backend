@@ -263,11 +263,23 @@ async def launch_quiz_in_session(
     # if quiz_obj.teacher_id and quiz_obj.teacher_id != current_user.id:
     #     raise HTTPException(status_code=404, detail="Quiz not found or not yours")
 
+    # Авто-завершаем все ещё активные квизы в этой сессии,
+    # чтобы исключить состояние, когда несколько SessionQuiz имеют ended_at == NULL
+    # (это ломало запросы /active и /end через scalar_one_or_none).
+    now_dt = datetime.now(timezone.utc)
+    active_result = await db_session.execute(
+        select(SessionQuiz)
+        .where(SessionQuiz.session_id == session_id)
+        .where(SessionQuiz.ended_at == None)  # noqa: E711
+    )
+    for prev in active_result.scalars().all():
+        prev.ended_at = now_dt
+
     # Создаем запись о запуске
     session_quiz = SessionQuiz(
         session_id=session_id,
         quiz_id=launch_data.quiz_id,
-        launched_at=datetime.now(timezone.utc)
+        launched_at=now_dt
     )
     db_session.add(session_quiz)
 
@@ -289,10 +301,13 @@ async def get_active_quiz_in_session(
     result = await db_session.execute(
         select(SessionQuiz)
         .where(SessionQuiz.session_id == session_id)
-        .where(SessionQuiz.ended_at == None)
+        .where(SessionQuiz.ended_at == None)  # noqa: E711
         .order_by(SessionQuiz.launched_at.desc())
     )
-    session_quiz = result.scalar_one_or_none()
+    # Используем .first() вместо scalar_one_or_none, т.к. в редких ситуациях
+    # может быть несколько активных записей (старая логика launch не закрывала
+    # предыдущие). MultipleResultsFound в этом случае ломал endpoint 500-кой.
+    session_quiz = result.scalars().first()
 
     if not session_quiz:
         return None
@@ -354,16 +369,17 @@ async def end_session_quiz(
     current_user: User = Depends(get_current_user)
 ):
     """Завершить текущий активный квиз в сессии"""
-    # Находим последний незавершенный квиз в сессии
+    # Находим все незавершённые квизы в сессии (теоретически их должно быть
+    # не больше одного, но используем .all() на случай гонки/легаси-данных).
     result = await db_session.execute(
         select(SessionQuiz)
         .where(SessionQuiz.session_id == session_id)
-        .where(SessionQuiz.ended_at == None)
+        .where(SessionQuiz.ended_at == None)  # noqa: E711
         .order_by(SessionQuiz.launched_at.desc())
     )
-    session_quiz = result.scalar_one_or_none()
+    active_quizzes = result.scalars().all()
 
-    if not session_quiz:
+    if not active_quizzes:
         raise HTTPException(status_code=404, detail="No active quiz in this session")
 
     # Проверка прав
@@ -371,10 +387,16 @@ async def end_session_quiz(
         select(Session).where(Session.id == session_id)
     )
     session_obj = session_result.scalar_one_or_none()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
     if session_obj.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    session_quiz.ended_at = datetime.now(timezone.utc)
+    # Закрываем все активные квизы; самый свежий считаем «текущим»
+    now_dt = datetime.now(timezone.utc)
+    for q in active_quizzes:
+        q.ended_at = now_dt
+    session_quiz = active_quizzes[0]
     await db_session.commit()
 
     # Считаем статистику

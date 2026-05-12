@@ -31,13 +31,14 @@ def get_app() -> FastAPI:
     # Mount static files
     application.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
     
+    allowed_origins = [
+        "https://frontend-production-4824.up.railway.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "https://frontend-production-4824.up.railway.app",
-            "http://localhost:5173",
-            "http://localhost:3000",
-        ],
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -46,9 +47,19 @@ def get_app() -> FastAPI:
     @application.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         traceback.print_exc()
+        # Manually inject CORS headers — Starlette doesn't run middleware
+        # for responses produced by exception handlers, otherwise the
+        # browser hides the real error behind a generic CORS message.
+        origin = request.headers.get("origin", "")
+        headers = {}
+        if origin in allowed_origins:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+            headers["Vary"] = "Origin"
         return JSONResponse(
             status_code=500,
             content={"detail": f"Internal server error: {str(exc)}"},
+            headers=headers,
         )
     
     bind_routes(application)
