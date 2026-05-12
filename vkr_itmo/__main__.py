@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from uvicorn import run
 import traceback
+import os
 
 from .config import AppConfig
 from .endpoints import routes
@@ -19,6 +21,15 @@ def get_app() -> FastAPI:
     application = FastAPI(
         title="VKR ITMO",
     )
+    
+    # Create uploads directory if it doesn't exist
+    os.makedirs("uploads", exist_ok=True)
+    os.makedirs("uploads/avatars", exist_ok=True)
+    os.makedirs("uploads/course_images", exist_ok=True)
+    os.makedirs("uploads/quiz_files", exist_ok=True)
+    
+    # Mount static files
+    application.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
     
     application.add_middleware(
         CORSMiddleware,

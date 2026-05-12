@@ -116,30 +116,16 @@ async def join_session(
             detail="Session has ended"
         )
 
-    # Проверяем, не присоединён ли уже (активный участник)
-    existing_active = await db_session.execute(
+    # Проверяем, был ли ранее (ушёл или активен) — разрешаем повторный вход
+    existing_participant = await db_session.execute(
         select(SessionParticipant)
         .where(SessionParticipant.session_id == session.id)
         .where(SessionParticipant.student_id == current_user.id)
-        .where(SessionParticipant.left_at == None)
     )
-    if existing_active.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Already joined this session"
-        )
-
-    # Проверяем, был ли ранее (ушёл) — разрешаем повторный вход
-    existing_left = await db_session.execute(
-        select(SessionParticipant)
-        .where(SessionParticipant.session_id == session.id)
-        .where(SessionParticipant.student_id == current_user.id)
-        .where(SessionParticipant.left_at != None)
-    )
-    prev_participant = existing_left.scalar_one_or_none()
+    prev_participant = existing_participant.scalar_one_or_none()
 
     if prev_participant:
-        # Rejoin: clear left_at
+        # Rejoin: clear left_at and update joined_at
         prev_participant.left_at = None
         prev_participant.joined_at = datetime.now(timezone.utc)
     else:
@@ -151,7 +137,7 @@ async def join_session(
         )
         db_session.add(participant)
 
-        # Увеличиваем счётчик
+        # Увеличиваем счётчик только для новых участников
         session.total_participants += 1
 
     await db_session.commit()

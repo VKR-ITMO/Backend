@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
+import os
+import uuid as uuid_lib
 
 from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import User, CourseEnrollment, SessionParticipant, QuizSubmission, Achievement
@@ -119,3 +121,52 @@ async def get_student_stats(
         average_quiz_score=average_quiz_score,
         total_achievements=total_achievements
     )
+
+
+@api_router.post("/{user_id}/avatar", response_model=UserResponse)
+async def upload_avatar(
+    user_id: UUID,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(check_self_or_admin)
+):
+    """Загрузить аватар пользователя"""
+    # Проверяем размер файла (макс 5 МБ)
+    MAX_SIZE = 5 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+    
+    # Проверяем тип файла
+    ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail=f"File type {file.content_type} not allowed")
+    
+    # Генерируем уникальный ID для файла
+    file_id = str(uuid_lib.uuid4())
+    
+    # Создаем директорию для аватаров если её нет
+    upload_dir = "uploads/avatars"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Сохраняем файл
+    file_extension = file.filename.split('.')[-1] if file.filename else 'jpg'
+    file_path = f"{upload_dir}/{file_id}.{file_extension}"
+    
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    # Обновляем пользователя
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Сохраняем URL аватара (в production это должен быть URL к S3 или CDN)
+    user.avatar_url = f"/uploads/avatars/{file_id}.{file_extension}"
+    
+    await session.commit()
+    await session.refresh(user)
+    
+    return user
