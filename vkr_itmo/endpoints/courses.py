@@ -52,7 +52,7 @@ async def create_course(
     Создать новый курс (только для teachers)
     """
     if current_user.role != UserRole.TEACHER:
-        logging.warning(f"Pizdaa, {current_user.role}")
+        logging.warning(f"Access denied: user role is {current_user.role}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only teachers can create courses"
