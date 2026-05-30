@@ -8,12 +8,14 @@ import secrets
 
 from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import Session, Lecture, User, SessionParticipant, Course, UserRole, SessionQuiz, QuizSubmission
-from vkr_itmo.auth import get_current_user
+from vkr_itmo.auth import get_current_user, create_access_token, get_password_hash
 from vkr_itmo.auth import get_session_owner, get_active_teacher_session
 from vkr_itmo.schemas.sessions import (
     SessionResponse,
     SessionStart,
     SessionJoin,
+    GuestJoin,
+    GuestJoinResponse,
     SessionWithLecture,
     CompletedSession,
     SessionParticipantResponse
@@ -170,6 +172,88 @@ async def join_session(
             "name": lecture.name,
             "topic": lecture.topic
         } if lecture else {}
+    )
+
+
+@api_router.post("/join/guest", response_model=GuestJoinResponse)
+async def join_session_as_guest(
+        join_data: GuestJoin,
+        db_session: AsyncSession = Depends(get_session)
+):
+    """Подключиться к сессии как гость (без аккаунта).
+
+    Создаёт временного пользователя-студента с введённым именем,
+    добавляет его участником сессии и возвращает JWT-токен,
+    чтобы гость мог отправлять реакции и проходить квизы.
+    """
+    # Ищем сессию по коду
+    result = await db_session.execute(
+        select(Session).where(Session.access_code == join_data.access_code.upper())
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session.ended_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Session has ended"
+        )
+
+    # Создаём гостевого пользователя с уникальным служебным email
+    guest_email = f"guest_{secrets.token_hex(8)}@guest.local"
+    guest_user = User(
+        email=guest_email,
+        password_hash=get_password_hash(secrets.token_hex(16)),
+        full_name=join_data.full_name.strip(),
+        role=UserRole.STUDENT,
+    )
+    db_session.add(guest_user)
+    await db_session.flush()  # получаем guest_user.id
+
+    # Добавляем участника сессии
+    participant = SessionParticipant(
+        session_id=session.id,
+        student_id=guest_user.id,
+        joined_at=datetime.now(timezone.utc)
+    )
+    db_session.add(participant)
+    session.total_participants += 1
+
+    await db_session.commit()
+    await db_session.refresh(session)
+    await db_session.refresh(guest_user)
+
+    # Получаем информацию о лекции
+    lecture_result = await db_session.execute(
+        select(Lecture).where(Lecture.id == session.lecture_id)
+    )
+    lecture = lecture_result.scalar_one_or_none()
+
+    access_token = create_access_token(guest_user.email)
+
+    return GuestJoinResponse(
+        access_token=access_token,
+        token_type="bearer",
+        student_id=guest_user.id,
+        student_name=guest_user.full_name,
+        session=SessionWithLecture(
+            id=session.id,
+            lecture_id=session.lecture_id,
+            teacher_id=session.teacher_id,
+            access_code=session.access_code,
+            started_at=session.started_at,
+            ended_at=session.ended_at,
+            total_participants=session.total_participants,
+            total_reactions=session.total_reactions,
+            total_quizzes=session.total_quizzes,
+            lecture={
+                "id": str(lecture.id),
+                "name": lecture.name,
+                "topic": lecture.topic
+            } if lecture else {}
+        )
     )
 
 
