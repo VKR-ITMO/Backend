@@ -5,6 +5,7 @@ from uuid import UUID
 from datetime import datetime, timedelta, timezone
 from typing import List
 import os
+import json
 import uuid as uuid_lib
 
 from vkr_itmo.db.session import get_session
@@ -222,6 +223,7 @@ async def upload_file(
     return {
         "file_id": file_id,
         "filename": file.filename,
+        "file_url": f"/uploads/quiz_files/{file_id}.{file_extension}",
         "content_type": file.content_type,
         "size": len(content)
     }
@@ -692,11 +694,24 @@ async def get_submissions_with_details(
                     "raw": raw,
                 })
             elif q_type == 'FILE':
+                file_url = None
+                file_name = None
+                if raw and raw[0]:
+                    try:
+                        info = json.loads(raw[0])
+                        file_url = info.get("url")
+                        file_name = info.get("filename")
+                    except (json.JSONDecodeError, TypeError):
+                        # Обратная совместимость: раньше хранился только file_id
+                        file_url = None
+                        file_name = raw[0]
                 decoded.append({
                     "question_id": q_id,
                     "question_text": q["text"],
                     "type": q_type,
-                    "answer_texts": [f"Файл: {raw[0]}" if raw else "Не загружен"],
+                    "answer_texts": [file_name or "Загружен файл"] if (raw and raw[0]) else ["Не загружен"],
+                    "file_url": file_url,
+                    "file_name": file_name,
                     "is_correct": None,
                     "raw": raw,
                 })
