@@ -24,6 +24,27 @@ from vkr_itmo.schemas.sessions import (
 api_router = APIRouter(prefix="/sessions", tags=["Sessions"])
 
 
+def _lecture_to_dict(lecture: Optional[Lecture], teacher: Optional[User] = None) -> dict:
+    """Полное представление лекции для ответов с сессией."""
+    if not lecture:
+        return {}
+    return {
+        "id": str(lecture.id),
+        "course_id": str(lecture.course_id) if lecture.course_id else None,
+        "teacher_id": str(lecture.teacher_id),
+        "name": lecture.name,
+        "topic": lecture.topic,
+        "description": lecture.description,
+        "scheduled_at": lecture.scheduled_at.isoformat() if lecture.scheduled_at else None,
+        "status": lecture.status.value if hasattr(lecture.status, "value") else str(lecture.status),
+        "max_participants": lecture.max_participants,
+        "enabled_reactions": lecture.enabled_reactions,
+        "access_code": lecture.access_code,
+        "is_free_session": lecture.is_free_session,
+        "teacher_name": teacher.full_name if teacher else None,
+    }
+
+
 @api_router.post("/start", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def start_session(
         session_data: SessionStart,
@@ -167,11 +188,7 @@ async def join_session(
         total_participants=session.total_participants,
         total_reactions=session.total_reactions,
         total_quizzes=session.total_quizzes,
-        lecture={
-            "id": str(lecture.id),
-            "name": lecture.name,
-            "topic": lecture.topic
-        } if lecture else {}
+        lecture=_lecture_to_dict(lecture)
     )
 
 
@@ -248,11 +265,7 @@ async def join_session_as_guest(
             total_participants=session.total_participants,
             total_reactions=session.total_reactions,
             total_quizzes=session.total_quizzes,
-            lecture={
-                "id": str(lecture.id),
-                "name": lecture.name,
-                "topic": lecture.topic
-            } if lecture else {}
+            lecture=_lecture_to_dict(lecture)
         )
     )
 
@@ -284,6 +297,16 @@ async def end_session(
 
     ended_at = datetime.now(timezone.utc)
     session.ended_at = ended_at
+
+    # Завершаем все ещё активные квизы этой сессии, чтобы студенты
+    # не продолжали видеть открытый квиз после завершения сессии
+    active_quizzes = await db_session.execute(
+        select(SessionQuiz)
+        .where(SessionQuiz.session_id == session_id)
+        .where(SessionQuiz.ended_at == None)  # noqa: E711
+    )
+    for sq in active_quizzes.scalars().all():
+        sq.ended_at = ended_at
 
     # Считаем длительность (handle both aware and naive started_at)
     started_at = session.started_at
@@ -486,9 +509,5 @@ async def get_active_session_for_lecture(
         total_participants=session.total_participants,
         total_reactions=session.total_reactions,
         total_quizzes=session.total_quizzes,
-        lecture={
-            "id": str(lecture.id),
-            "name": lecture.name,
-            "topic": lecture.topic
-        } if lecture else {}
+        lecture=_lecture_to_dict(lecture)
     )

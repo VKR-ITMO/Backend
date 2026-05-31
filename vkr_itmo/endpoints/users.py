@@ -7,8 +7,12 @@ import uuid as uuid_lib
 
 from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import User, CourseEnrollment, SessionParticipant, QuizSubmission, Achievement
-from vkr_itmo.auth import get_current_user, get_current_admin_user, check_self_or_admin
-from vkr_itmo.schemas.users import UserResponse, UserUpdate, StudentStats
+from vkr_itmo.auth import (
+    get_current_user, get_current_admin_user, check_self_or_admin,
+    verify_password, get_password_hash,
+)
+from vkr_itmo.db.models import UserRole
+from vkr_itmo.schemas.users import UserResponse, UserUpdate, PasswordChange, StudentStats
 
 api_router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -57,6 +61,38 @@ async def update_user(
     await session.commit()
     await session.refresh(user)
     return user
+
+
+@api_router.post("/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+        user_id: UUID,
+        body: PasswordChange,
+        session: AsyncSession = Depends(get_session),
+        current_user: User = Depends(check_self_or_admin)  # Требует Self | Admin
+):
+    """Сменить пароль пользователя.
+
+    Пользователь меняет свой пароль, подтверждая текущий.
+    Админ может сбросить пароль любому без текущего пароля.
+    """
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Для смены собственного пароля требуем подтверждение текущего
+    is_admin_reset = current_user.role == UserRole.ADMIN and current_user.id != user_id
+    if not is_admin_reset:
+        if not verify_password(body.current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect"
+            )
+
+    user.password_hash = get_password_hash(body.new_password)
+    await session.commit()
+    return None
 
 
 @api_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
