@@ -11,10 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vkr_itmo.db.models import User, UserRole
 from vkr_itmo.db.session import get_session
+from vkr_itmo.config import AppConfig
 
+config = AppConfig()
 bearer_scheme = HTTPBearer()
 
-SECRET_KEY = "secret-key-change-in-production"
+SECRET_KEY = config.SECRET_KEY.get_secret_value()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

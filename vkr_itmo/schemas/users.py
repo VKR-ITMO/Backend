@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 from uuid import UUID
@@ -32,6 +32,11 @@ class UserResponse(BaseModel):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=6, max_length=128)
 
 
 class StudentStats(BaseModel):

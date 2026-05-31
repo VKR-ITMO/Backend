@@ -1,13 +1,14 @@
-import logging
-
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
+import os
+import uuid as uuid_lib
+import logging
 from typing import Optional
 
 from vkr_itmo.db.session import get_session
-from vkr_itmo.db.models import Course, User, CourseEnrollment, Lecture, UserRole, CourseStatus
+from vkr_itmo.db.models import Course, CourseEnrollment, Lecture, Session, User, UserRole, CourseStatus
 from vkr_itmo.auth import get_current_user
 from vkr_itmo.auth import get_course_owner, get_course_teacher  # или из auth.py
 from vkr_itmo.schemas.courses import CourseResponse, CourseCreate, CourseUpdate, CourseWithStats
@@ -27,8 +28,8 @@ async def get_courses(
     """
     query = select(Course)
 
-    # Если указан фильтр по роли (например, только свои курсы для teacher)
-    if role == "my" and current_user.role == UserRole.TEACHER:
+    # Преподаватель всегда видит только свои курсы
+    if current_user.role == UserRole.TEACHER:
         query = query.where(Course.teacher_id == current_user.id)
     elif current_user.role == UserRole.STUDENT:
         # Для студента - только курсы, на которые он записан
@@ -52,7 +53,7 @@ async def create_course(
     Создать новый курс (только для teachers)
     """
     if current_user.role != UserRole.TEACHER:
-        logging.warning(f"Pizdaa, {current_user.role}")
+        logging.warning(f"Access denied: user role is {current_user.role}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only teachers can create courses"
@@ -274,3 +275,56 @@ async def unenroll_from_course(
     await session.delete(enrollment)
     await session.commit()
     return None
+
+
+@api_router.post("/{course_id}/image", response_model=CourseResponse)
+async def upload_course_image(
+    course_id: UUID,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Загрузить изображение курса"""
+    # Проверяем размер файла (макс 5 МБ)
+    MAX_SIZE = 5 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+    
+    # Проверяем тип файла
+    ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail=f"File type {file.content_type} not allowed")
+    
+    # Генерируем уникальный ID для файла
+    file_id = str(uuid_lib.uuid4())
+    
+    # Создаем директорию для изображений курсов если её нет
+    upload_dir = "uploads/course_images"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Сохраняем файл
+    file_extension = file.filename.split('.')[-1] if file.filename else 'jpg'
+    file_path = f"{upload_dir}/{file_id}.{file_extension}"
+    
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    # Обновляем курс
+    result = await session.execute(select(Course).where(Course.id == course_id))
+    course = result.scalar_one_or_none()
+    
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Проверяем права (только владелец или админ)
+    if current_user.role != UserRole.ADMIN and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your course")
+    
+    # Сохраняем URL изображения
+    course.image_url = f"/uploads/course_images/{file_id}.{file_extension}"
+    
+    await session.commit()
+    await session.refresh(course)
+    
+    return course

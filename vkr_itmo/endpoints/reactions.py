@@ -74,9 +74,7 @@ async def send_reaction(
     await db_session.commit()
     await db_session.refresh(reaction)
 
-    # TODO: Отправить реакцию через WebSocket всем участникам
-    # await websocket_manager.broadcast_to_session(
-    #     session_id,
+    # WebSocket broadcasting for reactions could be implemented in future
     #     {
     #         "event": "reaction:new",
     #         "payload": {

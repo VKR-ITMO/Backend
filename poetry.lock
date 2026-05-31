@@ -1461,6 +1461,18 @@ pycryptodome = ["pycryptodome (>=3.3.1,<4.0.0)"]
 test = ["pytest", "pytest-cov"]
 
 [[package]]
+name = "python-multipart"
+version = "0.0.28"
+description = "A streaming multipart parser for Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "python_multipart-0.0.28-py3-none-any.whl", hash = "sha256:10faac07eb966c3f48dc415f9dee46c04cb10d58d30a35677db8027c825ed9b6"},
+    {file = "python_multipart-0.0.28.tar.gz", hash = "sha256:8550da197eac0f7ab748961fc9509b999fa2662ea25cef857f05249f6893c0f8"},
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 description = "YAML parser and emitter for Python"
@@ -2066,4 +2078,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "3c2e581176840608fdd0e4ed29f100da23d47f803d1dad717cd24a9e8d6dd1b3"
+content-hash = "577cf0399758c304f590535e9edca5a21eccbf633967f926a924a9d8ad6837ce"

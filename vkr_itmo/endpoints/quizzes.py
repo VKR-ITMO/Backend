@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List
+import os
+import json
+import uuid as uuid_lib
 
 from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import (
@@ -128,7 +131,16 @@ async def update_quiz(
 
     # 2. Если переданы вопросы, заменяем их полностью
     if quiz_data.questions is not None:
-        # Удаляем старые вопросы (каскадно удалятся ответы)
+        # Сначала удаляем ответы, т.к. FK на quiz_answers.question_id
+        # не имеет ON DELETE CASCADE на уровне БД.
+        await db_session.execute(
+            QuizAnswer.__table__.delete().where(
+                QuizAnswer.question_id.in_(
+                    select(QuizQuestion.id).where(QuizQuestion.quiz_id == quiz_id)
+                )
+            )
+        )
+        # Затем удаляем сами вопросы
         await db_session.execute(
             QuizQuestion.__table__.delete().where(
                 QuizQuestion.quiz_id == quiz_id
@@ -173,6 +185,51 @@ async def delete_quiz(
 
 
 # ==========================================
+# ЗАГРУЗКА ФАЙЛОВ
+# ==========================================
+
+@api_router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Загрузка файла для ответов на вопросы типа FILE"""
+    # Проверяем размер файла (макс 10 МБ)
+    MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    
+    # Проверяем тип файла
+    ALLOWED_TYPES = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png']
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail=f"File type {file.content_type} not allowed")
+    
+    # Генерируем уникальный ID для файла
+    file_id = str(uuid_lib.uuid4())
+    
+    # Создаем директорию для файлов если её нет
+    upload_dir = "uploads/quiz_files"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Сохраняем файл
+    file_extension = file.filename.split('.')[-1] if file.filename else 'bin'
+    file_path = f"{upload_dir}/{file_id}.{file_extension}"
+    
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    return {
+        "file_id": file_id,
+        "filename": file.filename,
+        "file_url": f"/uploads/quiz_files/{file_id}.{file_extension}",
+        "content_type": file.content_type,
+        "size": len(content)
+    }
+
+
+# ==========================================
 # СЕССИОННЫЕ КВИЗЫ (RUNTIME)
 # ==========================================
 
@@ -202,14 +259,29 @@ async def launch_quiz_in_session(
         select(Quiz).where(Quiz.id == launch_data.quiz_id)
     )
     quiz_obj = quiz_result.scalar_one_or_none()
-    if not quiz_obj or quiz_obj.teacher_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Quiz not found or not yours")
+    if not quiz_obj:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    # Remove teacher_id check to allow launching quizzes from templates
+    # if quiz_obj.teacher_id and quiz_obj.teacher_id != current_user.id:
+    #     raise HTTPException(status_code=404, detail="Quiz not found or not yours")
+
+    # Авто-завершаем все ещё активные квизы в этой сессии,
+    # чтобы исключить состояние, когда несколько SessionQuiz имеют ended_at == NULL
+    # (это ломало запросы /active и /end через scalar_one_or_none).
+    now_dt = datetime.now(timezone.utc)
+    active_result = await db_session.execute(
+        select(SessionQuiz)
+        .where(SessionQuiz.session_id == session_id)
+        .where(SessionQuiz.ended_at == None)  # noqa: E711
+    )
+    for prev in active_result.scalars().all():
+        prev.ended_at = now_dt
 
     # Создаем запись о запуске
     session_quiz = SessionQuiz(
         session_id=session_id,
         quiz_id=launch_data.quiz_id,
-        launched_at=datetime.now(timezone.utc)
+        launched_at=now_dt
     )
     db_session.add(session_quiz)
 
@@ -231,10 +303,13 @@ async def get_active_quiz_in_session(
     result = await db_session.execute(
         select(SessionQuiz)
         .where(SessionQuiz.session_id == session_id)
-        .where(SessionQuiz.ended_at == None)
+        .where(SessionQuiz.ended_at == None)  # noqa: E711
         .order_by(SessionQuiz.launched_at.desc())
     )
-    session_quiz = result.scalar_one_or_none()
+    # Используем .first() вместо scalar_one_or_none, т.к. в редких ситуациях
+    # может быть несколько активных записей (старая логика launch не закрывала
+    # предыдущие). MultipleResultsFound в этом случае ломал endpoint 500-кой.
+    session_quiz = result.scalars().first()
 
     if not session_quiz:
         return None
@@ -296,16 +371,17 @@ async def end_session_quiz(
     current_user: User = Depends(get_current_user)
 ):
     """Завершить текущий активный квиз в сессии"""
-    # Находим последний незавершенный квиз в сессии
+    # Находим все незавершённые квизы в сессии (теоретически их должно быть
+    # не больше одного, но используем .all() на случай гонки/легаси-данных).
     result = await db_session.execute(
         select(SessionQuiz)
         .where(SessionQuiz.session_id == session_id)
-        .where(SessionQuiz.ended_at == None)
+        .where(SessionQuiz.ended_at == None)  # noqa: E711
         .order_by(SessionQuiz.launched_at.desc())
     )
-    session_quiz = result.scalar_one_or_none()
+    active_quizzes = result.scalars().all()
 
-    if not session_quiz:
+    if not active_quizzes:
         raise HTTPException(status_code=404, detail="No active quiz in this session")
 
     # Проверка прав
@@ -313,10 +389,16 @@ async def end_session_quiz(
         select(Session).where(Session.id == session_id)
     )
     session_obj = session_result.scalar_one_or_none()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
     if session_obj.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    session_quiz.ended_at = datetime.now(timezone.utc)
+    # Закрываем все активные квизы; самый свежий считаем «текущим»
+    now_dt = datetime.now(timezone.utc)
+    for q in active_quizzes:
+        q.ended_at = now_dt
+    session_quiz = active_quizzes[0]
     await db_session.commit()
 
     # Считаем статистику
@@ -340,6 +422,75 @@ async def end_session_quiz(
 submissions_router = APIRouter(prefix="/session-quizzes", tags=["Submissions"])
 
 
+@submissions_router.get("/{session_quiz_id}", response_model=SessionQuizWithStats)
+async def get_session_quiz(
+    session_quiz_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Получить SessionQuiz по ID с статистикой"""
+    result = await db_session.execute(
+        select(SessionQuiz).where(SessionQuiz.id == session_quiz_id)
+    )
+    session_quiz = result.scalar_one_or_none()
+    if not session_quiz:
+        raise HTTPException(status_code=404, detail="Session quiz not found")
+
+    # Получаем название квиза
+    quiz_result = await db_session.execute(
+        select(Quiz).where(Quiz.id == session_quiz.quiz_id)
+    )
+    quiz_obj = quiz_result.scalar_one_or_none()
+
+    # Считаем статистику
+    subs = await db_session.execute(
+        select(func.count(), func.avg(QuizSubmission.score))
+        .where(QuizSubmission.session_quiz_id == session_quiz.id)
+    )
+    count, avg = subs.first()
+
+    return {
+        **{c.name: getattr(session_quiz, c.name) for c in session_quiz.__table__.columns},
+        "title": quiz_obj.title if quiz_obj else "Квиз",
+        "total_submissions": count or 0,
+        "average_score": float(avg) if avg else 0.0
+    }
+
+
+@api_router.get("/{quiz_id}/session-quizzes")
+async def get_quiz_session_quizzes(
+    quiz_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Получить все запуски (session_quizzes) для квиза-шаблона"""
+    result = await db_session.execute(
+        select(SessionQuiz)
+        .where(SessionQuiz.quiz_id == quiz_id)
+        .order_by(SessionQuiz.launched_at.desc())
+    )
+    session_quizzes = result.scalars().all()
+
+    items = []
+    for sq in session_quizzes:
+        subs = await db_session.execute(
+            select(func.count(), func.avg(QuizSubmission.score))
+            .where(QuizSubmission.session_quiz_id == sq.id)
+        )
+        count, avg = subs.first()
+        items.append({
+            "id": sq.id,
+            "session_id": sq.session_id,
+            "quiz_id": sq.quiz_id,
+            "launched_at": sq.launched_at,
+            "ended_at": sq.ended_at,
+            "total_submissions": count or 0,
+            "average_score": float(avg) if avg else 0.0
+        })
+
+    return items
+
+
 @submissions_router.post("/{submission_id}/submit", response_model=QuizSubmissionResponse)
 async def submit_answers(
     submission_id: UUID,
@@ -359,26 +510,76 @@ async def submit_answers(
     # Считаем баллы
     total_score = 0
 
-    # submission_data.answers = { question_id: [answer_ids] }
-    for q_id, a_ids in submission_data.answers.items():
-        # Получаем правильные ответы для этого вопроса
-        correct_answers = await db_session.execute(
-            select(QuizAnswer).where(
-                QuizAnswer.question_id == q_id,
-                QuizAnswer.is_correct == True
-            )
+    # submission_data.answers = { question_id: [answer_ids or text or file_id] }
+    for q_id, a_values in submission_data.answers.items():
+        # Получаем вопрос
+        q_result = await db_session.execute(
+            select(QuizQuestion).where(QuizQuestion.id == q_id)
         )
-        correct_ids = {str(a.id) for a in correct_answers.scalars().all()}
-        submitted_ids = set(a_ids)
+        question = q_result.scalar_one_or_none()
+        if not question:
+            continue
 
-        # Логика: если наборы совпадают - балл засчитан
-        if correct_ids == submitted_ids and len(correct_ids) > 0:
-            # Получаем points вопроса
-            q_res = await db_session.execute(
-                select(QuizQuestion.points).where(QuizQuestion.id == q_id)
+        q_type = question.type.value if hasattr(question.type, 'value') else str(question.type)
+        pts = question.points
+
+        # TEXT и FILE - ручная проверка (0 баллов)
+        if q_type in ['TEXT', 'FILE']:
+            continue
+
+        # BOOLEAN - проверка правильного ответа
+        if q_type == 'BOOLEAN':
+            correct_answers = await db_session.execute(
+                select(QuizAnswer).where(
+                    QuizAnswer.question_id == q_id,
+                    QuizAnswer.is_correct == True
+                )
             )
-            pts = q_res.scalar()
-            total_score += pts
+            correct_ids = {str(a.id) for a in correct_answers.scalars().all()}
+            submitted_ids = set(a_values)
+            if correct_ids == submitted_ids and len(correct_ids) > 0:
+                total_score += pts
+
+        # SINGLE и MULTIPLE - проверка наборов
+        elif q_type in ['SINGLE', 'MULTIPLE']:
+            correct_answers = await db_session.execute(
+                select(QuizAnswer).where(
+                    QuizAnswer.question_id == q_id,
+                    QuizAnswer.is_correct == True
+                )
+            )
+            correct_ids = {str(a.id) for a in correct_answers.scalars().all()}
+            submitted_ids = set(a_values)
+            if correct_ids == submitted_ids and len(correct_ids) > 0:
+                total_score += pts
+
+        # ORDERING - проверка последовательности
+        elif q_type == 'ORDERING':
+            extra_data = question.extra_data or {}
+            correct_order = extra_data.get('correct_order', [])
+            if correct_order and a_values:
+                # Подсчитываем сколько элементов на правильных позициях
+                correct_positions = sum(1 for i, item in enumerate(a_values) if i < len(correct_order) and item == correct_order[i])
+                # Частичный балл: (правильные позиции / общее количество) * баллы
+                if len(correct_order) > 0:
+                    total_score += int((correct_positions / len(correct_order)) * pts)
+
+        # MATCHING - проверка пар
+        elif q_type == 'MATCHING':
+            extra_data = question.extra_data or {}
+            correct_pairs = extra_data.get('correct_pairs', {})
+            if correct_pairs and a_values:
+                try:
+                    # a_values - это JSON строка с парами
+                    import json
+                    submitted_pairs = json.loads(a_values[0]) if a_values else {}
+                    # Подсчитываем сколько правильных пар
+                    correct_count = sum(1 for k, v in submitted_pairs.items() if correct_pairs.get(k) == v)
+                    # Частичный балл: (правильные пары / общее количество) * баллы
+                    if len(correct_pairs) > 0:
+                        total_score += int((correct_count / len(correct_pairs)) * pts)
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
     submission = QuizSubmission(
         session_quiz_id=submission_id,
@@ -391,6 +592,177 @@ async def submit_answers(
     await db_session.commit()
     await db_session.refresh(submission)
     return submission
+
+
+@submissions_router.get("/{session_quiz_id}/submissions")
+async def get_submissions_with_details(
+    session_quiz_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Получить все ответы студентов с расшифровкой по вопросам (только teacher)"""
+    # Проверяем, что это SessionQuiz и учитель имеет доступ к сессии
+    sq_result = await db_session.execute(
+        select(SessionQuiz).where(SessionQuiz.id == session_quiz_id)
+    )
+    session_quiz = sq_result.scalar_one_or_none()
+    if not session_quiz:
+        raise HTTPException(status_code=404, detail="Session quiz not found")
+
+    session_result = await db_session.execute(
+        select(Session).where(Session.id == session_quiz.session_id)
+    )
+    session_obj = session_result.scalar_one_or_none()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if current_user.role != UserRole.ADMIN and session_obj.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only teacher of the session can view submissions")
+
+    # Загружаем все вопросы квиза с ответами
+    questions_result = await db_session.execute(
+        select(QuizQuestion)
+        .where(QuizQuestion.quiz_id == session_quiz.quiz_id)
+        .order_by(QuizQuestion.order_index)
+    )
+    questions = questions_result.scalars().all()
+
+    questions_data = []
+    answer_text_map = {}  # {answer_id: text}
+    correct_answer_ids_map = {}  # {question_id: set of correct answer_ids}
+    for q in questions:
+        answers_result = await db_session.execute(
+            select(QuizAnswer).where(QuizAnswer.question_id == q.id)
+        )
+        answers = answers_result.scalars().all()
+        correct_ids = set()
+        for a in answers:
+            answer_text_map[str(a.id)] = a.text
+            if a.is_correct:
+                correct_ids.add(str(a.id))
+        correct_answer_ids_map[str(q.id)] = correct_ids
+
+        q_type = q.type.value if hasattr(q.type, 'value') else str(q.type)
+        questions_data.append({
+            "id": str(q.id),
+            "text": q.text,
+            "type": q_type,
+            "points": q.points,
+            "extra_data": q.extra_data,
+            "answers": [
+                {"id": str(a.id), "text": a.text, "is_correct": a.is_correct}
+                for a in answers
+            ]
+        })
+
+    # Загружаем все submissions с именами студентов
+    subs_result = await db_session.execute(
+        select(QuizSubmission, User)
+        .join(User, QuizSubmission.student_id == User.id)
+        .where(QuizSubmission.session_quiz_id == session_quiz_id)
+        .order_by(QuizSubmission.score.desc(), QuizSubmission.submitted_at.asc())
+    )
+
+    submissions = []
+    for sub, user in subs_result.all():
+        # Расшифровываем ответы: превращаем id в text где возможно
+        decoded = []
+        for q in questions_data:
+            q_id = q["id"]
+            q_type = q["type"]
+            raw = sub.answers.get(q_id, []) if sub.answers else []
+            correct_ids = correct_answer_ids_map.get(q_id, set())
+
+            if q_type in ('SINGLE', 'MULTIPLE', 'BOOLEAN'):
+                texts = [answer_text_map.get(aid, aid) for aid in raw]
+                is_correct = set(raw) == correct_ids and len(correct_ids) > 0
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": texts,
+                    "is_correct": is_correct,
+                    "raw": raw,
+                })
+            elif q_type == 'TEXT':
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": [raw[0] if raw else ""],
+                    "is_correct": None,  # manual review
+                    "raw": raw,
+                })
+            elif q_type == 'FILE':
+                file_url = None
+                file_name = None
+                if raw and raw[0]:
+                    try:
+                        info = json.loads(raw[0])
+                        file_url = info.get("url")
+                        file_name = info.get("filename")
+                    except (json.JSONDecodeError, TypeError):
+                        # Обратная совместимость: раньше хранился только file_id
+                        file_url = None
+                        file_name = raw[0]
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": [file_name or "Загружен файл"] if (raw and raw[0]) else ["Не загружен"],
+                    "file_url": file_url,
+                    "file_name": file_name,
+                    "is_correct": None,
+                    "raw": raw,
+                })
+            elif q_type == 'ORDERING':
+                extra = q.get("extra_data") or {}
+                correct_order = extra.get("correct_order", [])
+                is_correct = list(raw) == list(correct_order) if correct_order else None
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": list(raw),
+                    "correct_order": correct_order,
+                    "is_correct": is_correct,
+                    "raw": raw,
+                })
+            elif q_type == 'MATCHING':
+                extra = q.get("extra_data") or {}
+                correct_pairs = extra.get("correct_pairs", {}) or {}
+                try:
+                    import json as _json
+                    submitted_pairs = _json.loads(raw[0]) if raw else {}
+                except (ValueError, IndexError):
+                    submitted_pairs = {}
+                is_correct = submitted_pairs == correct_pairs if correct_pairs else None
+                decoded.append({
+                    "question_id": q_id,
+                    "question_text": q["text"],
+                    "type": q_type,
+                    "answer_texts": [f"{k} → {v}" for k, v in submitted_pairs.items()],
+                    "pairs": submitted_pairs,
+                    "correct_pairs": correct_pairs,
+                    "is_correct": is_correct,
+                    "raw": raw,
+                })
+
+        submissions.append({
+            "id": str(sub.id),
+            "student_id": str(sub.student_id),
+            "student_name": user.full_name,
+            "student_email": user.email,
+            "score": sub.score,
+            "submitted_at": sub.submitted_at.isoformat() if sub.submitted_at else None,
+            "answers": decoded,
+        })
+
+    return {
+        "session_quiz_id": str(session_quiz_id),
+        "questions": questions_data,
+        "submissions": submissions,
+    }
 
 
 @submissions_router.get("/{submission_id}/leaderboard", response_model=List[LeaderboardEntry])

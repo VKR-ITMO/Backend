@@ -15,11 +15,12 @@ class AppConfig(BaseSettings):
     APP_HOST: str = "127.0.0.1"
     APP_PORT: int = 8080
 
+    SECRET_KEY: SecretStr = SecretStr("change-this-to-a-random-secret-key-in-production")
     POSTGRES_DB: str = "postgres"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_USER: str = "user"
     POSTGRES_PORT: int = 5432
-    POSTGRES_PASSWORD: SecretStr = SecretStr("hackme")
+    POSTGRES_PASSWORD: SecretStr = SecretStr("strong-secure-password-change-in-production")
     DB_CONNECT_RETRY: int = 20
     DB_POOL_SIZE: int = 15
 

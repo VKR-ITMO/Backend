@@ -16,6 +16,11 @@ class SessionJoin(BaseModel):
     access_code: str
 
 
+class GuestJoin(BaseModel):
+    access_code: str
+    full_name: str = Field(..., min_length=1, max_length=100)
+
+
 class SessionResponse(BaseModel):
     id: UUID
     lecture_id: UUID
@@ -32,6 +37,14 @@ class SessionResponse(BaseModel):
 
 class SessionWithLecture(SessionResponse):
     lecture: dict  # Можно сделать отдельную схему LectureInfo
+
+
+class GuestJoinResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    student_id: UUID
+    student_name: str
+    session: SessionWithLecture
 
 
 class CompletedSession(BaseModel):
@@ -53,5 +66,6 @@ class SessionParticipantResponse(BaseModel):
     student_email: str
     joined_at: datetime
     left_at: Optional[datetime] = None
+    total_score: int = 0
 
     model_config = {"from_attributes": True}
