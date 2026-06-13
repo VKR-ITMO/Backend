@@ -10,6 +10,7 @@ from vkr_itmo.db.session import get_session
 from vkr_itmo.db.models import Session, Lecture, User, SessionParticipant, Course, UserRole, SessionQuiz, QuizSubmission
 from vkr_itmo.auth import get_current_user, create_access_token, get_password_hash
 from vkr_itmo.auth import get_session_owner, get_active_teacher_session
+from vkr_itmo.achievements import check_and_award_achievements
 from vkr_itmo.schemas.sessions import (
     SessionResponse,
     SessionStart,
@@ -165,6 +166,9 @@ async def join_session(
 
     await db_session.commit()
     await db_session.refresh(session)
+
+    if not prev_participant:
+        await check_and_award_achievements(current_user.id, db_session)
 
     # Получаем информацию о лекции
     lecture_result = await db_session.execute(

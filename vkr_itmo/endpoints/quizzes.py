@@ -15,6 +15,7 @@ from vkr_itmo.db.models import (
 )
 from vkr_itmo.auth import get_current_user
 from vkr_itmo.auth import get_quiz_owner
+from vkr_itmo.achievements import check_and_award_achievements
 from vkr_itmo.schemas.quizzes import (
     QuizCreate, QuizUpdate, QuizResponse,
     LaunchQuiz, SessionQuizResponse, SessionQuizWithStats,
@@ -591,6 +592,9 @@ async def submit_answers(
     db_session.add(submission)
     await db_session.commit()
     await db_session.refresh(submission)
+
+    await check_and_award_achievements(current_user.id, db_session)
+
     return submission
 
 

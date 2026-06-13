@@ -13,6 +13,7 @@ from vkr_itmo.auth import get_current_user
 from vkr_itmo.auth import get_course_owner, get_course_teacher  # или из auth.py
 from vkr_itmo.schemas.courses import CourseResponse, CourseCreate, CourseUpdate, CourseWithStats
 from vkr_itmo.schemas.users import UserResponse
+from vkr_itmo.achievements import check_and_award_achievements
 
 api_router = APIRouter(prefix="/courses", tags=["Courses"])
 
@@ -237,6 +238,8 @@ async def enroll_to_course(
     session.add(enrollment)
     await session.commit()
     await session.refresh(enrollment)
+
+    await check_and_award_achievements(current_user.id, session)
 
     return {"message": "Successfully enrolled", "enrollment_id": str(enrollment.id)}
 

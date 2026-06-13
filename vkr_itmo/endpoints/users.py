@@ -12,7 +12,7 @@ from vkr_itmo.auth import (
     verify_password, get_password_hash,
 )
 from vkr_itmo.db.models import UserRole
-from vkr_itmo.schemas.users import UserResponse, UserUpdate, PasswordChange, StudentStats
+from vkr_itmo.schemas.users import UserResponse, UserUpdate, PasswordChange, StudentStats, AchievementResponse
 
 api_router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -157,6 +157,20 @@ async def get_student_stats(
         average_quiz_score=average_quiz_score,
         total_achievements=total_achievements
     )
+
+
+@api_router.get("/{user_id}/achievements", response_model=list[AchievementResponse])
+async def get_achievements(
+        user_id: UUID,
+        session: AsyncSession = Depends(get_session),
+        current_user: User = Depends(get_current_user)
+):
+    result = await session.execute(
+        select(Achievement)
+        .where(Achievement.student_id == user_id)
+        .order_by(Achievement.earned_at.desc())
+    )
+    return result.scalars().all()
 
 
 @api_router.post("/{user_id}/avatar", response_model=UserResponse)

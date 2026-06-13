@@ -45,3 +45,13 @@ class StudentStats(BaseModel):
     total_quizzes_taken: int
     average_quiz_score: float
     total_achievements: int
+
+
+class AchievementResponse(BaseModel):
+    id: UUID
+    type: str
+    title: str
+    description: str
+    earned_at: datetime
+
+    model_config = {"from_attributes": True}
