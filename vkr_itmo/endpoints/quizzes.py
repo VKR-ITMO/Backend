@@ -769,6 +769,68 @@ async def get_submissions_with_details(
     }
 
 
+@submissions_router.get("/{session_quiz_id}/poll-stats")
+async def get_poll_stats(
+    session_quiz_id: UUID,
+    db_session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """Статистика ответов по вариантам для опроса (доступно всем участникам)"""
+    sq_result = await db_session.execute(
+        select(SessionQuiz).where(SessionQuiz.id == session_quiz_id)
+    )
+    session_quiz = sq_result.scalar_one_or_none()
+    if not session_quiz:
+        raise HTTPException(status_code=404, detail="Session quiz not found")
+
+    # Берём первый вопрос квиза (для быстрого опроса он один)
+    q_result = await db_session.execute(
+        select(QuizQuestion)
+        .where(QuizQuestion.quiz_id == session_quiz.quiz_id)
+        .order_by(QuizQuestion.order_index)
+        .limit(1)
+    )
+    question = q_result.scalar_one_or_none()
+    if not question:
+        return {"total_votes": 0, "options": []}
+
+    # Загружаем варианты ответов
+    answers_result = await db_session.execute(
+        select(QuizAnswer).where(QuizAnswer.question_id == question.id)
+    )
+    answers = answers_result.scalars().all()
+    answer_map = {str(a.id): a.text for a in answers}
+
+    # Загружаем все сабмиты
+    subs_result = await db_session.execute(
+        select(QuizSubmission).where(QuizSubmission.session_quiz_id == session_quiz_id)
+    )
+    submissions = subs_result.scalars().all()
+
+    # Считаем голоса по каждому варианту
+    counts: dict[str, int] = {aid: 0 for aid in answer_map}
+    for sub in submissions:
+        raw = sub.answers or {}
+        chosen_ids = raw.get(str(question.id), [])
+        if isinstance(chosen_ids, list):
+            for aid in chosen_ids:
+                if aid in counts:
+                    counts[aid] += 1
+
+    total = sum(counts.values())
+    options = [
+        {
+            "answer_id": aid,
+            "text": answer_map[aid],
+            "count": cnt,
+            "percent": round(cnt / total * 100) if total > 0 else 0,
+        }
+        for aid, cnt in counts.items()
+    ]
+
+    return {"total_votes": total, "options": options}
+
+
 @submissions_router.get("/{submission_id}/leaderboard", response_model=List[LeaderboardEntry])
 async def get_leaderboard(
     submission_id: UUID,
